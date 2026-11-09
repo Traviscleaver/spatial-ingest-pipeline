@@ -1,4 +1,5 @@
 # Spatial Ingestion Pipeline
+<img width="1100" height="682" alt="image" src="https://github.com/user-attachments/assets/a76f64d7-e84a-4f1e-bbf0-854fcea6b7cc" />
 
 ## What it does
 
