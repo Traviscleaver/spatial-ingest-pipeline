@@ -1,65 +1,119 @@
 # create_test_assets.py
 from pathlib import Path
+
 import numpy as np
 import trimesh
 
+
+# Asset                              Fabrication                          Game
+
+# 01 solid cube                      Pass                                 Fail: missing UVs
+# 02 open box                        Fail: not watertight, zero volume    Fail: missing UVs; warns about open mesh and pivot
+# 03 dual shells                     Pass with separate-bodies warning    Pass with pivot warning
+# 04 degenerate mesh                 Fail: degenerate, not watertight     Fail: degenerate and missing UVs; warns about open mesh and pivot
+# 05 grounded textured sphere        Pass                                 Pass
+# 06 high-poly sphere without UVs    Pass                                 Fail: exceeds 20,000 triangles and lacks UVs
+
 RAW_DIR = Path("data/raw")
-RAW_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def build_test_suite():
-    print(f"Generating pipeline test suite in {RAW_DIR}...\n")
+def _write_obj(
+    mesh: trimesh.Trimesh,
+    file_path: Path,
+    uv_coords: np.ndarray | None = None,
+) -> None:
+    lines = ["# Generated spatial-ingest test asset"]
+    lines.extend(
+        f"v {x:.9g} {y:.9g} {z:.9g}" for x, y, z in mesh.vertices
+    )
 
-    # 1. Perfect Solid (Fabrication PASS)
+    if uv_coords is not None:
+        if len(uv_coords) != len(mesh.vertices):
+            raise ValueError("UV coordinate count must match vertex count.")
+        lines.extend(f"vt {u:.9g} {v:.9g}" for u, v in uv_coords)
+
+    for face in mesh.faces:
+        indices = face + 1
+        if uv_coords is None:
+            lines.append("f " + " ".join(str(index) for index in indices))
+        else:
+            lines.append(
+                "f " + " ".join(f"{index}/{index}" for index in indices)
+            )
+
+    file_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _spherical_uv(mesh: trimesh.Trimesh, radius: float) -> np.ndarray:
+    vertices = mesh.vertices
+    u = 0.5 + np.arctan2(vertices[:, 0], vertices[:, 2]) / (2 * np.pi)
+    v = 0.5 - np.arcsin(
+        np.clip(vertices[:, 1] / radius, -1.0, 1.0)
+    ) / np.pi
+    return np.column_stack((u, v))
+
+
+def _planar_uv(mesh: trimesh.Trimesh) -> np.ndarray:
+    xy = mesh.vertices[:, :2]
+    minimum = xy.min(axis=0)
+    extent = np.ptp(xy, axis=0)
+    extent[extent == 0] = 1.0
+    return (xy - minimum) / extent
+
+
+def build_test_suite(output_dir: str | Path = RAW_DIR) -> None:
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Generating pipeline test suite in {output_dir}...\n")
+
+    # 01: Solid Cube (Watertight, grounded at Z=0, no UVs)
     solid_cube = trimesh.creation.box(extents=(20.0, 20.0, 20.0))
-    solid_cube.export(RAW_DIR / "01_solid_cube_pass_fab.obj")
-    print("[+] 01_solid_cube_pass_fab.obj: Watertight single-body solid.")
+    solid_cube.apply_translation([0.0, 0.0, 10.0])
+    _write_obj(solid_cube, output_dir / "01_solid_cube_pass_fab.obj")
+    print("[+] 01_solid_cube_pass_fab.obj: Fabrication pass; Game fail (missing UVs).")
 
-    # 2. Open Boundary Mesh (Fabrication FAIL - Not Watertight)
+    # 02: Open Box (Missing 2 faces, centered at origin so min Z = -10.0, no UVs)
     open_box = trimesh.creation.box(extents=(20.0, 20.0, 20.0))
-    open_box.faces = open_box.faces[:-2]  # Remove two faces to punch an open boundary
-    open_box.export(RAW_DIR / "02_open_box_fail_fab.obj")
-    print("[+] 02_open_box_fail_fab.obj: Missing faces, non-manifold open boundary.")
+    open_box.faces = open_box.faces[:-2]
+    _write_obj(open_box, output_dir / "02_open_box_fail_fab.obj")
+    print("[+] 02_open_box_fail_fab.obj: Fabrication fail (not watertight, zero volume); Game fail (missing UVs, warns open mesh & pivot).")
 
-    # 3. Disjoint Multi-Body Mesh (Fabrication WARN/FAIL - 2 Shells)
+    # 03: Dual Shells (2 watertight bodies, UV-mapped, min Z = 2.0 for pivot warning)
     box_a = trimesh.creation.box(extents=(10.0, 10.0, 10.0))
     box_b = trimesh.creation.box(extents=(10.0, 10.0, 10.0))
     box_b.apply_translation([25.0, 0.0, 0.0])
     dual_boxes = trimesh.util.concatenate([box_a, box_b])
-    dual_boxes.export(RAW_DIR / "03_dual_shell_bodies.obj")
-    print("[+] 03_dual_shell_bodies.obj: Two disjoint shells in a single file.")
+    dual_boxes.apply_translation([0.0, 0.0, 7.0])
+    _write_obj(
+        dual_boxes,
+        output_dir / "03_dual_shell_bodies.obj",
+        _planar_uv(dual_boxes),
+    )
+    print("[+] 03_dual_shell_bodies.obj: Fabrication pass (separate-bodies warning); Game pass (pivot warning).")
 
-    # 4. Degenerate Geometry Mesh (Zero-Area Triangles)
-    degen_mesh = trimesh.creation.box(extents=(15.0, 15.0, 15.0))
-    # Collapse vertex 1 onto vertex 0 so adjacent faces have zero area
-    degen_mesh.vertices[1] = degen_mesh.vertices[0]
-    degen_mesh.export(RAW_DIR / "04_degenerate_faces.obj")
-    print("[+] 04_degenerate_faces.obj: Collapsed vertices producing zero-area triangles.")
+    # 04: Degenerate Mesh (Collapsed edge producing zero-area faces & non-watertight seam, min Z = -7.5, no UVs)
+    degenerate_mesh = trimesh.creation.box(extents=(15.0, 15.0, 15.0))
+    degenerate_mesh.vertices[1] = degenerate_mesh.vertices[0]
+    _write_obj(degenerate_mesh, output_dir / "04_degenerate_faces.obj")
+    print("[+] 04_degenerate_faces.obj: Fabrication fail (degenerate, not watertight); Game fail (degenerate & missing UVs, warns open mesh & pivot).")
 
-    # 5. Game Asset with UV Coordinates (Game PASS)
-    uv_sphere = trimesh.creation.uv_sphere(radius=10.0)
-    uv_sphere.export(RAW_DIR / "05_textured_sphere_pass_game.obj")
-    print("[+] 05_textured_sphere_pass_game.obj: Contiguous topology with valid UV mapping.")
+    # 05: Grounded Textured Sphere (3,840 tris, UV-mapped prior to Z translation, grounded at Z=0)
+    sphere_radius = 10.0
+    sphere = trimesh.creation.uv_sphere(radius=sphere_radius)
+    sphere_uvs = _spherical_uv(sphere, sphere_radius)
+    sphere.apply_translation([0.0, 0.0, sphere_radius])
+    _write_obj(
+        sphere,
+        output_dir / "05_textured_sphere_pass_game.obj",
+        sphere_uvs,
+    )
+    print("[+] 05_textured_sphere_pass_game.obj: Fabrication pass; Game pass (grounded and UV-mapped).")
 
-    # 6. Low-Poly Asset without UVs (Game FAIL)
-    raw_cube_lines = """# OBJ without texture coordinates
-v -5.0 -5.0 5.0
-v 5.0 -5.0 5.0
-v -5.0 5.0 5.0
-v 5.0 5.0 5.0
-v -5.0 5.0 -5.0
-v 5.0 5.0 -5.0
-v -5.0 -5.0 -5.0
-v 5.0 -5.0 -5.0
-f 1 2 4 3
-f 3 4 6 5
-f 5 6 8 7
-f 7 8 2 1
-f 2 8 6 4
-f 7 1 3 5
-"""
-    (RAW_DIR / "06_no_uvs_fail_game.obj").write_text(raw_cube_lines)
-    print("[+] 06_no_uvs_fail_game.obj: Valid solid geometry, but missing UV coordinates.")
+    # 06: High-Poly Sphere Without UVs (20,480 tris > 20,000 limit, watertight, grounded at Z=0, no UVs)
+    high_poly_sphere = trimesh.creation.icosphere(subdivisions=5, radius=10.0)
+    high_poly_sphere.apply_translation([0.0, 0.0, 10.0])
+    _write_obj(high_poly_sphere, output_dir / "06_no_uvs_fail_game.obj")
+    print("[+] 06_no_uvs_fail_game.obj: Fabrication pass; Game fail (exceeds 20,000 triangles and lacks UVs).")
 
     print("\nSuite generated successfully.")
 

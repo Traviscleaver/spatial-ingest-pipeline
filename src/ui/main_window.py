@@ -1,4 +1,4 @@
-# src/ui/main_window.py
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -40,7 +40,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(main_widget)
         main_layout = QVBoxLayout(main_widget)
 
-        # Action & Navigation Bar
+        # Action and Navigation Bar
         action_bar = QHBoxLayout()
 
         self.btn_ingest_file = QPushButton("Ingest Asset...")
@@ -54,6 +54,10 @@ class MainWindow(QMainWindow):
         self.btn_refresh = QPushButton("Refresh")
         self.btn_refresh.clicked.connect(self.refresh_data)
         action_bar.addWidget(self.btn_refresh)
+
+        self.btn_reset = QPushButton("Reset DB")
+        self.btn_reset.clicked.connect(self._on_reset_db)
+        action_bar.addWidget(self.btn_reset)
 
         action_bar.addSpacing(20)
 
@@ -84,7 +88,7 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 3)
         main_layout.addWidget(splitter)
 
-        # Status & Progress Footer
+        #Status and Progress Footer
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         main_layout.addWidget(self.progress_bar)
@@ -92,6 +96,25 @@ class MainWindow(QMainWindow):
     def refresh_data(self):
         self._all_assets = list_all_assets()
         self._filter_assets(self.search_bar.text())
+
+    def _on_reset_db(self):
+        conn = sqlite3.connect("data/pipeline.db")
+        try:
+            conn.execute("DELETE FROM asset_spatial_data")
+            conn.execute("DELETE FROM assets")
+            conn.execute("DELETE FROM sqlite_sequence")
+            conn.commit()
+        finally:
+            conn.close()
+
+        storage_dir = Path("data/storage")
+        if storage_dir.exists():
+            for file_path in storage_dir.iterdir():
+                if file_path.is_file():
+                    file_path.unlink()
+
+        self.refresh_data()
+        self.statusBar().showMessage("Database and storage reset.", 5000)
 
     def _filter_assets(self, query: str):
         query = query.strip().lower()
@@ -156,3 +179,4 @@ def run_app():
 
 if __name__ == "__main__":
     run_app()
+

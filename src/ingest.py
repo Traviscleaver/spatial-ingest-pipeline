@@ -49,7 +49,7 @@ def ingest_asset(
     else:
         raise ValueError(f"Unknown profile type: {profile_type}")
     if not report.passed:
-        raise AssestValidationError(report) # Raise an error if the validation fails
+        raise AssetValidationError(report) # Raise an error if the validation fails
         
 
     storage_dir.parent.mkdir(parents=True, exist_ok=True)
